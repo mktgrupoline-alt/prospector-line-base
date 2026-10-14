@@ -14,6 +14,11 @@ from xml.etree import ElementTree
 
 import requests
 
+# Fonte principal: espelho público da Casa dos Dados (mesmos arquivos da Receita, servidos por CDN, bem mais estável).
+# Reserva: compartilhamento oficial da Receita (WebDAV), que costuma derrubar downloads longos.
+ESPELHO = os.getenv("ESPELHO_URL", "https://dados-abertos-rf-cnpj.casadosdados.com.br/arquivos")
+FONTE = os.getenv("FONTE", "espelho")  # "espelho" ou "receita"
+UA = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) prospector-line-base/1.0"}
 BASE = os.getenv("RF_WEBDAV", "https://arquivos.receitafederal.gov.br/public.php/webdav")
 TOKEN = os.getenv("RF_TOKEN", "YggdBLfdninEJX9")
 AUTH = (TOKEN, "")
@@ -40,6 +45,18 @@ def propfind(path=""):
     raise SystemExit("Não consegui listar " + url)
 
 
+def espelho_meses():
+    r = requests.get(ESPELHO + "/", headers=UA, timeout=(30, 120))
+    r.raise_for_status()
+    return sorted(set(re.findall(r'href="(\d{4}-\d{2}(?:-\d{2})?)/"', r.text)))
+
+
+def espelho_arquivos(mes):
+    r = requests.get(f"{ESPELHO}/{mes}/", headers=UA, timeout=(30, 120))
+    r.raise_for_status()
+    return sorted(set(re.findall(r'href="([^"/]+\.zip)"', r.text, re.I)))
+
+
 def meses_disponiveis():
     root = propfind()
     meses = []
@@ -61,13 +78,19 @@ def arquivos_do_mes(mes):
 
 
 def baixar(mes, nome, destino):
-    """Download com retomada (Range) e novas tentativas: o servidor da Receita costuma oscilar."""
-    url = f"{BASE}/{mes}/{nome}"
-    for tentativa in range(12):
+    """Download com retomada (Range), novas tentativas e espera crescente: os servidores oscilam em arquivos grandes."""
+    if FONTE == "espelho":
+        url, auth = f"{ESPELHO}/{mes}/{nome}", None
+    else:
+        url, auth = f"{BASE}/{mes}/{nome}", AUTH
+    falhas_sem_progresso = 0
+    for tentativa in range(40):
         ja = os.path.getsize(destino) if os.path.exists(destino) else 0
-        headers = {"Range": f"bytes={ja}-"} if ja else {}
+        headers = dict(UA)
+        if ja:
+            headers["Range"] = f"bytes={ja}-"
         try:
-            with requests.get(url, auth=AUTH, headers=headers, stream=True, timeout=(30, 300)) as r:
+            with requests.get(url, auth=auth, headers=headers, stream=True, timeout=(30, 180)) as r:
                 if r.status_code == 416:
                     return destino
                 if ja and r.status_code != 206:
@@ -76,14 +99,17 @@ def baixar(mes, nome, destino):
                 with open(destino, "ab" if ja else "wb") as f:
                     for bloco in r.iter_content(1 << 20):
                         f.write(bloco)
-            with zipfile.ZipFile(destino) as z:
-                z.testzip() if os.getenv("TESTZIP") else None
+            zipfile.ZipFile(destino).close()
+            log(f"{nome}: {os.path.getsize(destino) / 1e6:.0f} MB baixados")
             return destino
         except zipfile.BadZipFile:
             log("zip incompleto, retomando", nome)
         except Exception as e:
-            log(f"download {nome} falhou ({e}), tentativa {tentativa + 1}")
-            time.sleep(min(120, 10 * (tentativa + 1)))
+            novo = os.path.getsize(destino) if os.path.exists(destino) else 0
+            falhas_sem_progresso = 0 if novo > ja else falhas_sem_progresso + 1
+            espera = min(300, 15 * (falhas_sem_progresso + 1))
+            log(f"download {nome} falhou ({e}); {novo / 1e6:.0f} MB até agora; nova tentativa em {espera}s")
+            time.sleep(espera)
     raise SystemExit("Falha definitiva ao baixar " + nome)
 
 
@@ -173,9 +199,20 @@ def main():
     ap.add_argument("--mes", default="")
     ap.add_argument("--tmp", default="tmp_rf")
     a = ap.parse_args()
-    mes = a.mes or meses_disponiveis()[-1]
+    global FONTE
+    try:
+        if FONTE != "espelho":
+            raise RuntimeError("fonte receita escolhida")
+        meses = espelho_meses()
+        mes = a.mes if a.mes in meses else meses[-1]
+        arqs = espelho_arquivos(mes)
+        log("Fonte: espelho Casa dos Dados")
+    except Exception as e:
+        log("Usando o servidor da Receita:", e)
+        FONTE = "receita"
+        mes = a.mes or meses_disponiveis()[-1]
+        arqs = arquivos_do_mes(mes)
     log("Mês da base:", mes)
-    arqs = arquivos_do_mes(mes)
     emp = [x for x in arqs if x.lower().startswith("empresas")]
     est = [x for x in arqs if x.lower().startswith("estabelecimentos")]
     if not emp or not est:
