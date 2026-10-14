@@ -1,0 +1,40 @@
+name: Base de contas (Receita Federal)
+
+on:
+  schedule:
+    - cron: "17 9 22 * *"   # dia 22 de cada mês, 06:17 (horário de Brasília); a Receita costuma publicar na primeira quinzena
+  workflow_dispatch:
+    inputs:
+      mes:
+        description: "Mês da base (AAAA-MM). Vazio = o mais recente"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  gerar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    env:
+      MIN_CAPITAL: "100000"
+      MIN_ESTAB: "3"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests==2.32.3
+      - name: Liberar espaço em disco
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc || true
+      - name: Gerar base
+        run: python scripts/gerar_base.py --saida dados --mes "${{ github.event.inputs.mes }}"
+      - name: Publicar na release "base"
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view base >/dev/null 2>&1 || gh release create base --title "Base de contas Prospector Line" --notes "Atualizada automaticamente todo mês a partir dos dados abertos do CNPJ."
+          gh release upload base dados/* --clobber
+          MES=$(python -c "import json;print(json.load(open('dados/meta.json'))['mes_receita'])")
+          gh release edit base --notes "Base da Receita de ${MES}. Gerada em $(date -u +%Y-%m-%d). Empresas ativas de porte DEMAIS, agregadas por município."
