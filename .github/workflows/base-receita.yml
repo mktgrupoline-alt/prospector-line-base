@@ -6,9 +6,13 @@ on:
   workflow_dispatch:
     inputs:
       mes:
-        description: "Mês da base (AAAA-MM). Vazio = o mais recente"
+        description: "Pasta da base (vazio = a mais recente)"
         required: false
         default: ""
+      fonte:
+        description: "espelho (Casa dos Dados, recomendado) ou receita"
+        required: false
+        default: "espelho"
 
 permissions:
   contents: write
@@ -20,9 +24,10 @@ jobs:
     env:
       MIN_CAPITAL: "100000"
       MIN_ESTAB: "3"
+      FONTE: ${{ github.event.inputs.fonte || 'espelho' }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - run: pip install requests==2.32.3
