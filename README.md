@@ -27,6 +27,16 @@ Se a Receita mudar o endereço dos arquivos, ajuste `RF_WEBDAV` e `RF_TOKEN` no 
 ## Tamanho dos arquivos
 Cada estado vira um arquivo compactado. São Paulo é o maior. O log do workflow mostra o tamanho de cada um ao final. Se algum passar de uns 30 MB, a busca na extensão fica lenta: aumente `MIN_CAPITAL` (por exemplo para 500000) e rode de novo.
 
+## Radar de gatilhos
+Cada linha traz quatro colunas calculadas por empresa (raiz do CNPJ), com referência na data da base:
+- `unid_novas_12m` e `unid_novas_6m`: filiais **ativas** com início de atividade nos últimos 12 e 6 meses.
+- `novas_recentes`: até 5 unidades novas mais recentes, no formato `codigo_municipio:AAAAMMDD`, separadas por vírgula.
+- `abertura_matriz`: data de início da matriz (a extensão marca como "empresa nova" quando tem menos de 2 anos).
+
+O `meta.json` informa a janela usada em `radar`. Matriz nunca conta como unidade nova; data futura é descartada como erro de cadastro.
+
+Testes: `python3 -m unittest discover -s tests -v`.
+
 ## Limitações
 - A Receita não informa número de funcionários. "Porte DEMAIS" quer dizer faturamento acima de R$ 4,8 milhões por ano, e junta média e grande empresa. Use a quantidade de estabelecimentos e o capital social para separar.
 - O endereço dos arquivos da Receita já mudou antes. Se o workflow falhar ao listar os arquivos, confira o endereço atual do compartilhamento e ajuste `RF_WEBDAV`/`RF_TOKEN`.
