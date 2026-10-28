@@ -10,6 +10,7 @@ Uso: python gerar_base.py [--saida dados] [--mes AAAA-MM]
 """
 import argparse, csv, gzip, io, json, os, re, sys, time, zipfile
 from collections import defaultdict
+from datetime import date
 from xml.etree import ElementTree
 
 import requests
@@ -127,6 +128,76 @@ def capital(v):
         return 0.0
 
 
+# ---------- Radar de gatilhos ----------
+# Unidade nova = filial ATIVA com data de início de atividade nos últimos 12 meses antes da data da base.
+# Sai na mesma rodada, sem depender da base anterior.
+MAX_NOVAS_LISTADAS = 5
+
+
+def data_ref(mes, hoje=None):
+    """Data de referência da base: 'AAAA-MM-DD' ou 'AAAA-MM' (dia 1). Sem mês válido, usa hoje."""
+    m = re.match(r"^(\d{4})-(\d{2})(?:-(\d{2}))?$", mes or "")
+    if m:
+        try:
+            return date(int(m.group(1)), int(m.group(2)), int(m.group(3) or 1))
+        except ValueError:
+            pass
+    return hoje or date.today()
+
+
+def menos_meses(d, n):
+    """Mesma data n meses antes; dia ajustado para o fim do mês quando não existe (31/03 - 1 mês = 28 ou 29/02)."""
+    a, m = divmod(d.year * 12 + d.month - 1 - n, 12)
+    m += 1
+    for dia in (d.day, 30, 29, 28):
+        try:
+            return date(a, m, dia)
+        except ValueError:
+            continue
+
+
+def iso8(d):
+    return d.strftime("%Y%m%d")
+
+
+class Radar:
+    """Acumula, por empresa, as filiais abertas na janela e a data de abertura da matriz."""
+
+    def __init__(self, ref):
+        self.ref = iso8(ref)
+        self.l12 = iso8(menos_meses(ref, 12))
+        self.l6 = iso8(menos_meses(ref, 6))
+        self.novas = {}       # basico -> [qtd12, qtd6, [(data, municipio), ...]]
+        self.matriz = {}      # basico -> data de abertura da matriz
+
+    def registrar(self, basico, matriz_filial, inicio, municipio):
+        inicio = (inicio or "").strip()
+        if not re.fullmatch(r"\d{8}", inicio):
+            return
+        if matriz_filial == "1":
+            self.matriz[basico] = inicio
+            return
+        if not (self.l12 <= inicio <= self.ref):   # fora da janela ou data futura (erro de cadastro)
+            return
+        g = self.novas.get(basico)
+        if g is None:
+            g = self.novas[basico] = [0, 0, []]
+        g[0] += 1
+        if inicio >= self.l6:
+            g[1] += 1
+        g[2].append((inicio, municipio))
+        if len(g[2]) > MAX_NOVAS_LISTADAS * 4:   # limita memória em empresas com centenas de unidades novas
+            g[2] = sorted(g[2], reverse=True)[:MAX_NOVAS_LISTADAS]
+
+    def colunas(self, basico):
+        """[unid_novas_12m, unid_novas_6m, novas_recentes, abertura_matriz] para a linha de saída."""
+        g = self.novas.get(basico)
+        if not g:
+            return ["0", "0", "", self.matriz.get(basico, "")]
+        recentes = ",".join(f"{mun}:{d}" for d, mun in sorted(g[2], reverse=True)[:MAX_NOVAS_LISTADAS])
+        return [str(g[0]), str(g[1]), recentes, self.matriz.get(basico, "")]
+
+
 def processar(arquivos_empresas, arquivos_estab, saida, mes):
     # 1) Empresas de porte DEMAIS (05)
     empresas = {}
@@ -141,6 +212,7 @@ def processar(arquivos_empresas, arquivos_estab, saida, mes):
 
     # 2) Estabelecimentos ativos dessas empresas, agregados por empresa + município
     total_ativos = defaultdict(int)
+    radar = Radar(data_ref(mes))
     grupos = {}  # (basico, municipio) -> [qtd, linha representativa]
     for arq in arquivos_estab:
         n = 0
@@ -148,6 +220,7 @@ def processar(arquivos_empresas, arquivos_estab, saida, mes):
             if len(c) < 30 or c[5] != "02" or c[0] not in empresas:
                 continue
             total_ativos[c[0]] += 1
+            radar.registrar(c[0], c[3], c[10], c[20])
             chave = (c[0], c[20])
             g = grupos.get(chave)
             rep = (c[1], c[2], c[3], c[4].strip(), c[11], c[19], c[20], c[21] + c[22], c[27].strip().lower(), c[10], c[17].strip(), c[18])
@@ -166,13 +239,15 @@ def processar(arquivos_empresas, arquivos_estab, saida, mes):
     for (basico, mun), (qtd, rep) in grupos.items():
         razao, natureza, cap = empresas[basico]
         tot = total_ativos[basico]
-        if cap < MIN_CAPITAL and tot < MIN_ESTAB_SEM_CAPITAL:
-            continue
         ordem, dv, mf, fantasia, cnae, uf, municipio, tel, email, abertura, bairro, cep = rep
+        # Hospitais filantrópicos têm capital zero e às vezes uma unidade só; entram mesmo assim.
+        if cap < MIN_CAPITAL and tot < MIN_ESTAB_SEM_CAPITAL and not cnae.startswith("861"):
+            continue
         por_uf[uf].append([basico + ordem + dv, mf, razao, fantasia, cnae, municipio, uf, f"{cap:.0f}", natureza,
-                           str(tot), str(qtd), tel, email, abertura, bairro, cep])
+                           str(tot), str(qtd), tel, email, abertura, bairro, cep] + radar.colunas(basico))
     cab = ["cnpj", "matriz_filial", "razao_social", "nome_fantasia", "cnae", "municipio_rf", "uf", "capital_social",
-           "natureza_juridica", "estab_ativos_brasil", "estab_no_municipio", "telefone", "email", "abertura", "bairro", "cep"]
+           "natureza_juridica", "estab_ativos_brasil", "estab_no_municipio", "telefone", "email", "abertura", "bairro", "cep",
+           "unid_novas_12m", "unid_novas_6m", "novas_recentes", "abertura_matriz"]
     resumo = {}
     for uf, linhas in por_uf.items():
         if not uf or len(uf) != 2 or uf == "EX":
@@ -187,6 +262,8 @@ def processar(arquivos_empresas, arquivos_estab, saida, mes):
         log(f"{uf}: {len(linhas)} linhas, {os.path.getsize(caminho) / 1e6:.1f} MB")
     meta = {"mes_receita": mes, "gerado_em": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "criterio": {"porte": "DEMAIS", "situacao": "ATIVA", "min_capital": MIN_CAPITAL, "min_estab": MIN_ESTAB_SEM_CAPITAL},
+            "radar": {"referencia": radar.ref, "desde_12m": radar.l12, "desde_6m": radar.l6,
+                      "empresas_com_unidade_nova": len(radar.novas)},
             "colunas": cab, "ufs": resumo}
     with open(os.path.join(saida, "meta.json"), "w", encoding="utf-8") as f:
         json.dump(meta, f, ensure_ascii=False, indent=1)
