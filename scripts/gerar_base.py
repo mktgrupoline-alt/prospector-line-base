@@ -132,6 +132,67 @@ def capital(v):
 # Unidade nova = filial ATIVA com data de início de atividade nos últimos 12 meses antes da data da base.
 # Sai na mesma rodada, sem depender da base anterior.
 MAX_NOVAS_LISTADAS = 5
+MAX_FANTASIAS = 3            # nomes fantasia mais usados por empresa (somando todas as unidades do Brasil)
+
+# Palavras que identificam a unidade, não a marca: "PAO DE ACUCAR - LOJA 103", "HIROTA SUPERMERCADOS - LOJA 03".
+_RE_UNIDADE = re.compile(r"\b(LOJA|LJ|FILIAL|FIL|UNIDADE|UND|UN|MATRIZ|SEDE|DEPOSITO|DEP|CD|CENTRO DE DISTRIBUICAO|ESCRITORIO|"
+                         r"AGENCIA|AG|POSTO|PA|PDV|N|NO|NR|NUM)\b|\d+|[^A-Z0-9 &]")
+
+
+def _sem_acento(t):
+    import unicodedata
+    return "".join(ch for ch in unicodedata.normalize("NFD", t) if not unicodedata.combining(ch))
+
+
+def limpa_fantasia(f):
+    """Nome fantasia sem número de loja e sem palavras de unidade, com os acentos originais.
+    Devolve '' se sobrar menos de 3 letras."""
+    t = (f or "").upper()
+    # As palavras de unidade são procuradas na forma sem acento; a posição é a mesma (NFD + remoção mantém 1 letra por letra).
+    base = _sem_acento(t)
+    if len(base) != len(t):   # caractere que se decompõe em vários: limpa só pela forma sem acento
+        t = base
+    out, ult = [], 0
+    for m in _RE_UNIDADE.finditer(base):
+        out.append(t[ult:m.start()]); out.append(" "); ult = m.end()
+    out.append(t[ult:])
+    t = re.sub(r"\s+", " ", "".join(out)).strip(" -&")
+    return t if len(t.replace(" ", "")) >= 3 else ""
+
+
+class Fantasias:
+    """Conta, por empresa, os nomes fantasia de todas as unidades ativas: a marca das lojas some quando a
+    base agrega por município e guarda só a linha da matriz (Petz, Pão de Açúcar, Assaí).
+    Conta pela forma sem acento e guarda a grafia que apareceu primeiro."""
+
+    def __init__(self):
+        self.cont = {}   # basico -> {chave sem acento: [qtd, grafia]}
+
+    def registrar(self, basico, fantasia):
+        f = limpa_fantasia(fantasia)
+        if not f:
+            return
+        k = _sem_acento(f)
+        d = self.cont.get(basico)
+        if d is None:
+            d = self.cont[basico] = {}
+        if k in d:
+            d[k][0] += 1
+            if d[k][1] == k and f != k:   # prefere a grafia com acento
+                d[k][1] = f
+        else:
+            d[k] = [1, f]
+        if len(d) > 60:   # empresas com um nome por loja (nome da cidade no fantasia): mantém só os mais usados
+            for kk, _ in sorted(d.items(), key=lambda x: x[1][0])[:30]:
+                del d[kk]
+
+    def coluna(self, basico):
+        """'NOME:qtd|NOME:qtd' com os mais usados primeiro (até MAX_FANTASIAS)."""
+        d = self.cont.get(basico)
+        if not d:
+            return ""
+        top = sorted(d.values(), key=lambda x: (-x[0], x[1]))[:MAX_FANTASIAS]
+        return "|".join(f"{n.replace('|', ' ').replace(':', ' ')}:{q}" for q, n in top)
 
 
 def data_ref(mes, hoje=None):
@@ -213,6 +274,7 @@ def processar(arquivos_empresas, arquivos_estab, saida, mes):
     # 2) Estabelecimentos ativos dessas empresas, agregados por empresa + município
     total_ativos = defaultdict(int)
     radar = Radar(data_ref(mes))
+    fantasias = Fantasias()
     grupos = {}  # (basico, municipio) -> [qtd, linha representativa]
     for arq in arquivos_estab:
         n = 0
@@ -221,6 +283,7 @@ def processar(arquivos_empresas, arquivos_estab, saida, mes):
                 continue
             total_ativos[c[0]] += 1
             radar.registrar(c[0], c[3], c[10], c[20])
+            fantasias.registrar(c[0], c[4])
             chave = (c[0], c[20])
             g = grupos.get(chave)
             rep = (c[1], c[2], c[3], c[4].strip(), c[11], c[19], c[20], c[21] + c[22], c[27].strip().lower(), c[10], c[17].strip(), c[18])
@@ -244,10 +307,10 @@ def processar(arquivos_empresas, arquivos_estab, saida, mes):
         if cap < MIN_CAPITAL and tot < MIN_ESTAB_SEM_CAPITAL and not cnae.startswith("861"):
             continue
         por_uf[uf].append([basico + ordem + dv, mf, razao, fantasia, cnae, municipio, uf, f"{cap:.0f}", natureza,
-                           str(tot), str(qtd), tel, email, abertura, bairro, cep] + radar.colunas(basico))
+                           str(tot), str(qtd), tel, email, abertura, bairro, cep] + radar.colunas(basico) + [fantasias.coluna(basico)])
     cab = ["cnpj", "matriz_filial", "razao_social", "nome_fantasia", "cnae", "municipio_rf", "uf", "capital_social",
            "natureza_juridica", "estab_ativos_brasil", "estab_no_municipio", "telefone", "email", "abertura", "bairro", "cep",
-           "unid_novas_12m", "unid_novas_6m", "novas_recentes", "abertura_matriz"]
+           "unid_novas_12m", "unid_novas_6m", "novas_recentes", "abertura_matriz", "fantasias"]
     resumo = {}
     for uf, linhas in por_uf.items():
         if not uf or len(uf) != 2 or uf == "EX":
