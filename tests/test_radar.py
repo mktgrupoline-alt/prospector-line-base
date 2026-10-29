@@ -64,6 +64,36 @@ class Radar(unittest.TestCase):
         self.assertEqual(self.r.colunas("Z"), ["0", "0", "", ""])
 
 
+class Fantasias(unittest.TestCase):
+    def test_limpa_numero_de_loja_e_palavras_de_unidade(self):
+        self.assertEqual(gb.limpa_fantasia("PAO DE ACUCAR - LOJA 103"), "PAO DE ACUCAR")
+        self.assertEqual(gb.limpa_fantasia("Pão de Açúcar Lj. 12"), "PÃO DE AÇÚCAR")
+        self.assertEqual(gb.limpa_fantasia("HIROTA SUPERMERCADOS - LOJA 03"), "HIROTA SUPERMERCADOS")
+        self.assertEqual(gb.limpa_fantasia("CD 04"), "")
+        self.assertEqual(gb.limpa_fantasia(""), "")
+
+    def test_mais_usados_primeiro_somando_todas_as_unidades(self):
+        f = gb.Fantasias()
+        for n in ["PETZ", "PETZ - LOJA 2", "PETZ 33", "PET CENTER MARGINAL", "", "SEJA PET"]:
+            f.registrar("A", n)
+        f.registrar("A", "SEJA PET")
+        self.assertEqual(f.coluna("A"), "PETZ:3|SEJA PET:2|PET CENTER MARGINAL:1")
+        self.assertEqual(f.coluna("B"), "")
+
+    def test_conta_sem_acento_e_mostra_com_acento(self):
+        f = gb.Fantasias()
+        for n in ["PAO DE ACUCAR - LOJA 1", "PÃO DE AÇÚCAR 2", "Pao de Acucar"]:
+            f.registrar("A", n)
+        self.assertEqual(f.coluna("A"), "PÃO DE AÇÚCAR:3")
+
+    def test_memoria_limitada_mantem_a_marca(self):
+        f = gb.Fantasias()
+        for i in range(500):
+            f.registrar("A", "ASSAI ATACADISTA")
+            f.registrar("A", f"LOJA CIDADE {chr(65 + i % 26)}{chr(65 + i // 26 % 26)}")
+        self.assertTrue(f.coluna("A").startswith("ASSAI ATACADISTA:500|"))
+
+
 def zip_csv(caminho, nome, linhas):
     buf = io.StringIO()
     csv.writer(buf, delimiter=";", quotechar='"', quoting=csv.QUOTE_ALL).writerows(linhas)
@@ -103,7 +133,7 @@ class PonteAPonta(unittest.TestCase):
             self.assertEqual(l["abertura_matriz"], "19990101")
         self.assertEqual(meta["radar"], {"referencia": "20260914", "desde_12m": "20250914", "desde_6m": "20260314",
                                          "empresas_com_unidade_nova": 1})
-        self.assertEqual(meta["colunas"][-4:], ["unid_novas_12m", "unid_novas_6m", "novas_recentes", "abertura_matriz"])
+        self.assertEqual(meta["colunas"][-5:], ["unid_novas_12m", "unid_novas_6m", "novas_recentes", "abertura_matriz", "fantasias"])
 
 
 if __name__ == "__main__":
