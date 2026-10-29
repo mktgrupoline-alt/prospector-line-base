@@ -32,6 +32,7 @@ Cada linha traz quatro colunas calculadas por empresa (raiz do CNPJ), com refer�
 - `unid_novas_12m` e `unid_novas_6m`: filiais **ativas** com início de atividade nos últimos 12 e 6 meses.
 - `novas_recentes`: até 5 unidades novas mais recentes, no formato `codigo_municipio:AAAAMMDD`, separadas por vírgula.
 - `abertura_matriz`: data de início da matriz (a extensão marca como "empresa nova" quando tem menos de 2 anos).
+- `fantasias`: até 3 nomes fantasia mais usados pela empresa, somando todas as unidades ativas do Brasil, no formato `NOME:qtd|NOME:qtd` (sem número de loja). É o que permite achar a empresa pela marca (Petz, Assaí, Pão de Açúcar) quando a razão social é outra e a matriz não tem fantasia.
 
 O `meta.json` informa a janela usada em `radar`. Matriz nunca conta como unidade nova; data futura é descartada como erro de cadastro.
 
